@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Koszty energii - Pompa ciepła Ecodan Zubadan</title>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
+  <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>body{margin:0;padding:0;}</style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+const { useState, useMemo, createContext, useContext } = React;
+const { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Line, ComposedChart, PieChart, Pie, Cell } = Recharts;
+
+
+// ━━━ HEAT PUMP DATA (MELCloud) ━━━
+// occ = occupied. May-Jul 2025: pre-occupancy (renovation), pump on standby/testing
+const MONTHS_DATA = [
+  { date: "2025-05", total: 66.42, heating: 66.42, tank_water: 0, produced_total: 353.04, outdoor_temp: null, occ: false },
+  { date: "2025-06", total: 44.89, heating: 43.35, tank_water: 1.54, produced_total: 213.65, outdoor_temp: null, occ: false },
+  { date: "2025-07", total: 28.40, heating: 14.15, tank_water: 14.25, produced_total: 55.33, outdoor_temp: null, occ: false },
+  { date: "2025-08", total: 76.66, heating: 26.85, tank_water: 49.81, produced_total: 236.83, outdoor_temp: null, occ: true }, // od 10.08
+  { date: "2025-09", total: 118.46, heating: 54.75, tank_water: 63.71, produced_total: 460.31, outdoor_temp: null, occ: true },
+  { date: "2025-10", total: 373.26, heating: 285.73, tank_water: 87.53, produced_total: 1777.43, outdoor_temp: 8.8, occ: true },
+  { date: "2025-11", total: 580.71, heating: 488.68, tank_water: 92.03, produced_total: 2640.78, outdoor_temp: 4.6, occ: true },
+  { date: "2025-12", total: 840.57, heating: 722.76, tank_water: 117.81, produced_total: 3512.59, outdoor_temp: 2.4, occ: true },
+  { date: "2026-01", total: 1488.31, heating: 1352.54, tank_water: 135.77, produced_total: 4672.41, outdoor_temp: -5.1, occ: true },
+  { date: "2026-02", total: 962.75, heating: 858.55, tank_water: 104.20, produced_total: 3360.17, outdoor_temp: -1.9, occ: true },
+  { date: "2026-03", total: 24.60, heating: 13.94, tank_water: 10.66, produced_total: 113.99, outdoor_temp: 7.6, occ: true },
+];
+
+// ━━━ INVOICE DATA (PGE) - household total kWh per calendar month ━━━
+// Verified from 10 invoices: FV 1R-9R/2025 + 10R/2026
+// Meter readings: 30/04:3929.6 → 31/05:4680.9 → 30/06:4837.6 → 31/07:4994.9
+//   → 04/08:5022 → 22/09:5699 → 31/10:6599.8 → 30/11:7519.6 → 31/12:8777.2 → 31/01:10737.2
+const INVOICE_DATA = {
+  "2025-05": { invoiceKwh: 751, nr: "2R/2025", brutto: 840.80, hasData: true },
+  "2025-06": { invoiceKwh: 157, nr: "3R/2025", brutto: 190.18, hasData: true },
+  "2025-07": { invoiceKwh: 157, nr: "4R/2025", brutto: 204.25, hasData: true },
+  "2025-08": { invoiceKwh: 400, nr: "5R+6R", brutto: null, hasData: true, est: true },
+  "2025-09": { invoiceKwh: 489, nr: "6R+7R", brutto: null, hasData: true, est: true },
+  "2025-10": { invoiceKwh: 716, nr: "7R/2025", brutto: null, hasData: true, est: true },
+  "2025-11": { invoiceKwh: 920, nr: "8R/2025", brutto: 1045.60, hasData: true },
+  "2025-12": { invoiceKwh: 1258, nr: "9R/2025", brutto: 1415.80, hasData: true },
+  "2026-01": { invoiceKwh: 1960, nr: "10R/2026", brutto: 2120.83, hasData: true },
+  "2026-02": { hasData: false },
+  "2026-03": { hasData: false },
+};
+
+// ━━━ RATES VERIFIED FROM INVOICES ━━━
+const G11_RATE_2025 = 1.095;
+const G11_RATE_2026 = 1.099;
+const G12W_PEAK = 1.301;
+const G12W_OFFPEAK = 0.684;
+
+// ━━━ FIXED FEES - verified from each invoice (netto) ━━━
+const FIXED_FEES = {
+  "2025-05": { s: 9.98, a: 4.50, m: 0, p: 0.33 },
+  "2025-06": { s: 9.98, a: 4.50, m: 0, p: 0.33 },
+  "2025-07": { s: 9.98, a: 4.50, m: 11.44, p: 0.33 },
+  "2025-08": { s: 9.98, a: 4.50, m: 16.01, p: 0.33 },
+  "2025-09": { s: 9.98, a: 4.50, m: 16.01, p: 0.33 },
+  "2025-10": { s: 9.98, a: 4.50, m: 16.01, p: 0.33 },
+  "2025-11": { s: 9.98, a: 4.50, m: 16.01, p: 0.33 },
+  "2025-12": { s: 9.98, a: 4.50, m: 16.01, p: 0.33 },
+  "2026-01": { s: 12.18, a: 4.50, m: 24.05, p: 0 },
+  "2026-02": { s: 14.98, a: 4.50, m: 24.05, p: 0 },
+  "2026-03": { s: 14.98, a: 4.50, m: 24.05, p: 0 },
+};
+const fixedBrutto = (d) => { const f = FIXED_FEES[d]; return f ? (f.s + f.a + f.m + f.p) * 1.23 : 38; };
+
+const TARIFFS = {
+  "2025-05": "G11", "2025-06": "G11", "2025-07": "G11", "2025-08": "G11",
+  "2025-09": "G11", "2025-10": "G11", "2025-11": "G11", "2025-12": "G11",
+  "2026-01": "G11/G12W", "2026-02": "G12W", "2026-03": "G12W",
+};
+
+const ML = (d) => {
+  const [y, m] = d.split("-");
+  const n = ["","Sty","Lut","Mar","Kwi","Maj","Cze","Lip","Sie","Wrz","Paź","Lis","Gru"];
+  return `${n[parseInt(m)]} '${y.slice(2)}`;
+};
+
+// ━━━ THEME SYSTEM ━━━
+const themes = {
+  dark: {
+    bg: "#0a0a16", text: "#e0e0e0", textStrong: "#fff", textMuted: "rgba(255,255,255,0.5)",
+    textFaint: "rgba(255,255,255,0.3)", textUltraFaint: "rgba(255,255,255,0.12)",
+    card: "rgba(255,255,255,0.02)", border: "rgba(255,255,255,0.06)", borderStrong: "rgba(255,255,255,0.1)",
+    gridStroke: "rgba(255,255,255,0.04)", axisTick: "rgba(255,255,255,0.4)", axisTickSub: "rgba(255,255,255,0.3)",
+    tooltipBg: "#13132a", tooltipBorder: "rgba(255,255,255,0.12)", tooltipShadow: "0 8px 32px rgba(0,0,0,0.5)",
+    pump: "#4fc3f7", pumpSoft: "rgba(79,195,247,0.25)", pumpBg: "rgba(79,195,247,0.08)", pumpBorder: "rgba(79,195,247,0.15)", pumpRow: "rgba(79,195,247,0.03)",
+    house: "#ce93d8", houseSoft: "rgba(206,147,216,0.25)",
+    heat: "#4fc3f7", hw: "#ff8a65", fixed: "#607d8b",
+    cop: "#66bb6a", copSoft: "rgba(102,187,106,0.25)",
+    ok: "#66bb6a", okBg: "rgba(102,187,106,0.06)", okBorder: "rgba(102,187,106,0.15)",
+    warn: "#ffa726", warnBg: "rgba(255,167,38,0.06)", warnBorder: "rgba(255,167,38,0.15)",
+    danger: "#ef5350",
+    statGrad: "linear-gradient(135deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.01) 100%)",
+    labelColor: "rgba(255,255,255,0.4)", barBg: "rgba(255,255,255,0.04)",
+    tagBg: "rgba(255,255,255,0.05)", tagColor: "rgba(255,255,255,0.4)",
+    footerBg: "rgba(255,255,255,0.02)", footerBorder: "rgba(255,255,255,0.04)", footerText: "rgba(255,255,255,0.25)",
+    btnBg: "rgba(255,255,255,0.06)", btnHover: "rgba(255,255,255,0.1)",
+  },
+  light: {
+    bg: "#f5f6fa", text: "#333", textStrong: "#111", textMuted: "#666",
+    textFaint: "#999", textUltraFaint: "#ccc",
+    card: "#fff", border: "#e2e5ea", borderStrong: "#d0d4db",
+    gridStroke: "rgba(0,0,0,0.06)", axisTick: "#666", axisTickSub: "#999",
+    tooltipBg: "#fff", tooltipBorder: "#ddd", tooltipShadow: "0 8px 32px rgba(0,0,0,0.12)",
+    pump: "#1976d2", pumpSoft: "rgba(25,118,210,0.22)", pumpBg: "rgba(25,118,210,0.07)", pumpBorder: "rgba(25,118,210,0.22)", pumpRow: "rgba(25,118,210,0.04)",
+    house: "#9c27b0", houseSoft: "rgba(156,39,176,0.18)",
+    heat: "#1976d2", hw: "#f4511e", fixed: "#90a4ae",
+    cop: "#388e3c", copSoft: "rgba(56,142,60,0.18)",
+    ok: "#2e7d32", okBg: "rgba(46,125,50,0.06)", okBorder: "rgba(46,125,50,0.2)",
+    warn: "#e65100", warnBg: "rgba(230,81,0,0.05)", warnBorder: "rgba(230,81,0,0.18)",
+    danger: "#c62828",
+    statGrad: "linear-gradient(135deg, #fff 0%, #f8f9fb 100%)",
+    labelColor: "#888", barBg: "rgba(0,0,0,0.04)",
+    tagBg: "#eef0f4", tagColor: "#555",
+    footerBg: "#fff", footerBorder: "#e8eaee", footerText: "#aaa",
+    btnBg: "#e8eaee", btnHover: "#dce0e6",
+  },
+};
+
+const ThemeCtx = createContext(themes.dark);
+const mono = "'JetBrains Mono', monospace";
+
+const CustomTooltip = ({ active, payload, label }) => {
+  const t = useContext(ThemeCtx);
+  if (!active || !payload?.length) return null;
+  return (
+    <div style={{ background: t.tooltipBg, border: `1px solid ${t.tooltipBorder}`, borderRadius: 8, padding: "10px 14px", fontSize: 12, color: t.textMuted, lineHeight: 1.8, boxShadow: t.tooltipShadow, maxWidth: 280 }}>
+      <div style={{ color: t.textStrong, fontWeight: 600, marginBottom: 4, fontSize: 13 }}>{label}</div>
+      {payload.filter(p => p.value > 0.5).map((p, i) => (
+        <div key={i} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <div style={{ width: 8, height: 8, borderRadius: 2, background: p.color || p.fill, flexShrink: 0 }} />
+          <span style={{ opacity: 0.7, fontSize: 11 }}>{p.name}:</span>
+          <span style={{ color: t.textStrong, fontWeight: 500, fontSize: 11 }}>
+            {typeof p.value === "number" ? (/zł|kosz|Stał/.test(p.name) ? `${p.value.toFixed(0)} zł` : /COP/.test(p.name) ? p.value.toFixed(2) : `${p.value.toFixed(0)} kWh`) : p.value}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+};
+
+const Stat = ({ label, value, sub, c }) => {
+  const t = useContext(ThemeCtx);
+  return (
+    <div style={{ background: t.statGrad, border: `1px solid ${t.border}`, borderRadius: 12, padding: "16px 20px", flex: "1 1 180px", minWidth: 150 }}>
+      <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.08em", color: t.labelColor, marginBottom: 6 }}>{label}</div>
+      <div style={{ fontSize: 24, fontWeight: 700, color: c || t.pump, fontFamily: mono, lineHeight: 1.1 }}>{value}</div>
+      {sub && <div style={{ fontSize: 10, color: t.textFaint, marginTop: 4 }}>{sub}</div>}
+    </div>
+  );
+};
+
+const Section = ({ children, icon, title }) => {
+  const t = useContext(ThemeCtx);
+  return (
+    <>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16, marginTop: 36 }}>
+        <span style={{ fontSize: 18 }}>{icon}</span>
+        <h2 style={{ fontSize: 15, fontWeight: 600, color: t.textStrong, margin: 0 }}>{title}</h2>
+        <div style={{ flex: 1, height: 1, background: `linear-gradient(90deg, ${t.border} 0%, transparent 100%)` }} />
+      </div>
+      {children}
+    </>
+  );
+};
+
+const Legend = ({ items, note }) => {
+  const t = useContext(ThemeCtx);
+  return (
+    <div style={{ display: "flex", justifyContent: "center", gap: 16, padding: "4px 0 8px", fontSize: 11, color: t.textMuted, flexWrap: "wrap" }}>
+      {items.map(([n, c]) => (
+        <span key={n}><span style={{ display: "inline-block", width: 10, height: 10, borderRadius: 2, background: c, marginRight: 6, verticalAlign: "middle" }} />{n}</span>
+      ))}
+      {note && <span style={{ color: t.textFaint, fontSize: 10 }}>{note}</span>}
+    </div>
+  );
+};
+
+function HeatPumpDashboard() {
+  const [offPeakPct, setOffPeakPct] = useState(68);
+  const [dark, setDark] = useState(true);
+  const t = dark ? themes.dark : themes.light;
+  const blend = useMemo(() => (offPeakPct / 100) * G12W_OFFPEAK + (1 - offPeakPct / 100) * G12W_PEAK, [offPeakPct]);
+
+  const data = useMemo(() => MONTHS_DATA.map((m) => {
+    const tariff = TARIFFS[m.date];
+    const fixed = fixedBrutto(m.date);
+    // Jan 2026: FV 10R actual split — G11: 1503 kWh (76.7%), G12W: 457 kWh (23.3%)
+    let rate = tariff === "G12W" ? blend : tariff === "G11/G12W" ? 0.767 * G11_RATE_2026 + 0.233 * blend : G11_RATE_2025;
+    const varCost = m.total * rate;
+    const heatCost = m.heating * rate;
+    const hwCost = m.tank_water * rate;
+    const cop = m.total > 0 ? m.produced_total / m.total : 0;
+    const inv = INVOICE_DATA[m.date] || {};
+    const hasInv = !!inv.hasData;
+    const houseKwh = hasInv ? Math.max(0, (inv.invoiceKwh || 0) - m.total) : null;
+    const houseCost = houseKwh !== null ? houseKwh * rate : null;
+    const totalKwh = hasInv ? inv.invoiceKwh : null;
+    const pumpPct = totalKwh ? (m.total / totalKwh * 100) : null;
+    const pumpFixed = pumpPct !== null ? fixed * pumpPct / 100 : fixed;
+    const houseFixed = pumpPct !== null ? fixed - pumpFixed : 0;
+    const pumpTotal = varCost + pumpFixed;
+    const houseTotal = houseCost !== null ? houseCost + houseFixed : null;
+    return {
+      ...m, label: ML(m.date), rate, tariff, varCost, fixed, heatCost, hwCost, cop,
+      houseKwh, houseCost, totalKwh, pumpPct, pumpFixed, houseFixed, pumpTotal, houseTotal,
+      hasInv, est: inv.est, invBrutto: inv.brutto,
+    };
+  }), [blend]);
+
+  const tot = useMemo(() => {
+    const consumed = data.reduce((s, d) => s + d.total, 0);
+    const produced = data.reduce((s, d) => s + d.produced_total, 0);
+    const varTotal = data.reduce((s, d) => s + d.varCost, 0);
+    const fixTotal = data.reduce((s, d) => s + d.fixed, 0);
+    const pumpCost = data.reduce((s, d) => s + d.pumpTotal, 0);
+    const heatCost = data.reduce((s, d) => s + d.heatCost, 0);
+    const hwCost = data.reduce((s, d) => s + d.hwCost, 0);
+    const avgCop = produced / consumed;
+    const peak = data.reduce((mx, d) => d.pumpTotal > mx.pumpTotal ? d : mx, data[0]);
+    const withInv = data.filter(d => d.hasInv);
+    const houseKwh = withInv.reduce((s, d) => s + (d.houseKwh || 0), 0);
+    const invKwh = withInv.reduce((s, d) => s + (d.totalKwh || 0), 0);
+    // Occupied-only stats (excl. May-Jul renovation)
+    const occData = data.filter(d => d.occ);
+    const occConsumed = occData.reduce((s, d) => s + d.total, 0);
+    const occProduced = occData.reduce((s, d) => s + d.produced_total, 0);
+    const occCop = occProduced / occConsumed;
+    const occCost = occData.reduce((s, d) => s + d.pumpTotal, 0);
+    const occWithInv = occData.filter(d => d.hasInv);
+    const occHouseKwh = occWithInv.reduce((s, d) => s + (d.houseKwh || 0), 0);
+    return { consumed, produced, varTotal, fixTotal, pumpCost, heatCost, hwCost, avgCop, peak, houseKwh, invKwh, occCop, occConsumed, occProduced, occCost, occHouseKwh };
+  }, [data]);
+
+  const kwhChart = useMemo(() => data.map(d => ({ label: d.label, pumpKwh: Math.round(d.total), houseKwh: d.houseKwh !== null ? Math.round(d.houseKwh) : 0 })), [data]);
+  const costChart = useMemo(() => data.map(d => ({ label: d.label, pumpVar: Math.round(d.varCost), houseVar: d.houseCost !== null ? Math.round(d.houseCost) : 0, fixed: Math.round(d.fixed) })), [data]);
+  const tariffSim = useMemo(() => {
+    // Scenario: what if pump ran on ONE tariff for ALL 11 months?
+    // G11 scenario: all months use G11 fixed fees (sieciowa 9.98)
+    // G12W scenario: all months use G12W fixed fees (sieciowa 14.98)
+    const g11fix = data.reduce((s, d) => {
+      const f = FIXED_FEES[d.date];
+      // Use G11 sieciowa (9.98) for all months
+      return s + ((9.98 + f.a + f.m + f.p) * 1.23);
+    }, 0);
+    const g12wfix = data.reduce((s, d) => {
+      const f = FIXED_FEES[d.date];
+      // Use G12W sieciowa (14.98) for all months
+      return s + ((14.98 + f.a + f.m + f.p) * 1.23);
+    }, 0);
+    const g11var = data.reduce((s, d) => s + d.total * G11_RATE_2025, 0);
+    const g12wvar = data.reduce((s, d) => s + d.total * blend, 0);
+    const g11 = g11var + g11fix;
+    const g12w = g12wvar + g12wfix;
+    return { g11, g12w, save: g11 - g12w };
+  }, [data, blend]);
+
+  return (
+    <ThemeCtx.Provider value={t}>
+      <div style={{ minHeight: "100vh", background: t.bg, color: t.text, fontFamily: "'Outfit', sans-serif", padding: "24px 20px 48px", transition: "background 0.3s, color 0.3s" }}>
+        <div style={{ maxWidth: 960, margin: "0 auto" }}>
+
+          {/* Header */}
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: 12, marginBottom: 8 }}>
+            <div>
+              <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.12em", color: t.textFaint, marginBottom: 4 }}>Mitsubishi Ecodan Zubadan · Aroniowa 5</div>
+              <h1 style={{ fontSize: 26, fontWeight: 700, color: t.textStrong, margin: 0, letterSpacing: "-0.02em" }}>Koszty energii - dom i pompa ciepła</h1>
+              <div style={{ fontSize: 12, color: t.textFaint, marginTop: 4 }}>Maj 2025 - Marzec 2026 · MELCloud + faktury PGE</div>
+            </div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <button onClick={() => setDark(v => !v)} style={{ background: t.btnBg, border: `1px solid ${t.border}`, borderRadius: 8, padding: "8px 14px", fontSize: 12, color: t.textMuted, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
+                {dark ? "☀️" : "🌙"} {dark ? "Light" : "Dark"}
+              </button>
+              <div style={{ background: t.pumpBg, border: `1px solid ${t.pumpBorder}`, borderRadius: 8, padding: "8px 14px", fontSize: 11, color: t.pump, lineHeight: 1.6 }}>
+                <div style={{ fontWeight: 600 }}>G11 → G12W (~23.01.2026)</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Badges */}
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+            <div style={{ background: t.okBg, border: `1px solid ${t.okBorder}`, borderRadius: 8, padding: "6px 14px", fontSize: 10, color: t.textMuted }}>
+              <span style={{ color: t.ok, fontWeight: 700 }}>✓ 10 faktur</span> FV 1R-9R/2025 + 10R/2026
+            </div>
+            <div style={{ background: t.warnBg, border: `1px solid ${t.warnBorder}`, borderRadius: 8, padding: "6px 14px", fontSize: 10, color: t.textMuted }}>
+              <span style={{ color: t.warn }}>Brak faktur:</span> lut, mar '26
+            </div>
+            <div style={{ background: t.tagBg, border: `1px solid ${t.border}`, borderRadius: 8, padding: "6px 14px", fontSize: 10, color: t.textMuted }}>
+              G11: 1.095 zł/kWh · G12W: {blend.toFixed(3)} zł (szczyt 1.30 / noc 0.68)
+            </div>
+          </div>
+
+          {/* G12W slider */}
+          <div style={{ background: t.card, border: `1px solid ${t.border}`, borderRadius: 10, padding: "10px 18px", marginTop: 12, display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+            <div style={{ fontSize: 11, color: t.textMuted, minWidth: 140 }}>G12W strefa tańsza (S2)</div>
+            <input type="range" min={40} max={95} value={offPeakPct} onChange={(e) => setOffPeakPct(+e.target.value)} style={{ flex: 1, minWidth: 100, accentColor: t.pump }} />
+            <div style={{ fontFamily: mono, fontSize: 14, fontWeight: 700, color: t.pump, width: 44, textAlign: "right" }}>{offPeakPct}%</div>
+            <div style={{ fontSize: 9, color: t.textFaint, width: "100%" }}>Faktura sty: 62% nocna (cały dom). Pompa prawdopodobnie 65-75% nocna. Suwak wpływa na blended stawkę G12W.</div>
+          </div>
+
+          {/* Stats */}
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 20 }}>
+            <Stat label="Koszt pompy (11 mc)" value={`${tot.pumpCost.toFixed(0)} zł`} sub={`${tot.consumed.toFixed(0)} kWh zużyte`} c={t.pump} />
+            <Stat label="COP (od zamieszkania)" value={tot.occCop.toFixed(2)} sub={`${tot.occProduced.toFixed(0)} kWh ciepła · ogółem ${tot.avgCop.toFixed(2)}`} c={t.cop} />
+            <Stat label="Koszt kWh ciepła" value={`${(tot.occCost / tot.occProduced).toFixed(2)} zł`} sub="zamieszkane mc, ze stałymi" c={t.warn} />
+            <Stat label="Dom (bez pompy)" value={`${tot.occHouseKwh.toFixed(0)} kWh`} sub={`od 10.08 · remont V-VII: ${(tot.houseKwh - tot.occHouseKwh).toFixed(0)} kWh`} c={t.house} />
+          </div>
+
+          {/* ━━━ CHART 1: kWh pump vs house ━━━ */}
+          <Section icon="🏠" title="Zużycie energii - pompa vs reszta domu (kWh)">
+            <div style={{ background: t.card, border: `1px solid ${t.border}`, borderRadius: 12, padding: "16px 8px 8px" }}>
+              <ResponsiveContainer width="100%" height={290}>
+                <BarChart data={kwhChart} barGap={2}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={t.gridStroke} />
+                  <XAxis dataKey="label" tick={{ fill: t.axisTick, fontSize: 10 }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fill: t.axisTickSub, fontSize: 10 }} axisLine={false} tickLine={false} />
+                  <Tooltip content={<CustomTooltip />} />
+                  <Bar dataKey="pumpKwh" name="Pompa ciepła (kWh)" stackId="a" fill={t.pump} />
+                  <Bar dataKey="houseKwh" name="Reszta domu (kWh)" stackId="a" fill={t.house} radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+              <Legend items={[["Pompa ciepła", t.pump], ["Reszta domu", t.house]]} note="lut, mar '26 - brak faktur PGE" />
+            </div>
+          </Section>
+
+          {/* ━━━ CHART 2: Full house cost ━━━ */}
+          <Section icon="💰" title="Koszt energii całego domu (zł brutto)">
+            <div style={{ background: t.card, border: `1px solid ${t.border}`, borderRadius: 12, padding: "16px 8px 8px" }}>
+              <ResponsiveContainer width="100%" height={290}>
+                <BarChart data={costChart} barGap={2}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={t.gridStroke} />
+                  <XAxis dataKey="label" tick={{ fill: t.axisTick, fontSize: 10 }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fill: t.axisTickSub, fontSize: 10 }} axisLine={false} tickLine={false} />
+                  <Tooltip content={<CustomTooltip />} />
+                  <Bar dataKey="pumpVar" name="Pompa - koszt zmienny (zł)" stackId="a" fill={t.pump} />
+                  <Bar dataKey="houseVar" name="Dom - koszt zmienny (zł)" stackId="a" fill={t.house} />
+                  <Bar dataKey="fixed" name="Opłaty stałe (zł)" stackId="a" fill={t.fixed} radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+              <Legend items={[["Pompa zmienne", t.pump], ["Dom zmienne", t.house], ["Opłaty stałe", t.fixed]]} />
+            </div>
+          </Section>
+
+          {/* ━━━ CHART 3: Pump breakdown ━━━ */}
+          <Section icon="🔥" title="Pompa ciepła - ogrzewanie vs CWU (zł)">
+            <div style={{ background: t.card, border: `1px solid ${t.border}`, borderRadius: 12, padding: "16px 8px 8px" }}>
+              <ResponsiveContainer width="100%" height={250}>
+                <BarChart data={data} barGap={2}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={t.gridStroke} />
+                  <XAxis dataKey="label" tick={{ fill: t.axisTick, fontSize: 10 }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fill: t.axisTickSub, fontSize: 10 }} axisLine={false} tickLine={false} />
+                  <Tooltip content={<CustomTooltip />} />
+                  <Bar dataKey="heatCost" name="Ogrzewanie koszt (zł)" stackId="a" fill={t.heat} />
+                  <Bar dataKey="hwCost" name="CWU koszt (zł)" stackId="a" fill={t.hw} />
+                  <Bar dataKey="pumpFixed" name="Stałe - udział pompy (zł)" stackId="a" fill={t.fixed} radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+              <Legend items={[["Ogrzewanie", t.heat], ["CWU", t.hw], ["Stałe (prop.)", t.fixed]]} />
+            </div>
+          </Section>
+
+          {/* ━━━ CHART 4: COP ━━━ */}
+          <Section icon="⚡" title="Energia pompy i COP">
+            <div style={{ background: t.card, border: `1px solid ${t.border}`, borderRadius: 12, padding: "16px 8px 8px" }}>
+              <ResponsiveContainer width="100%" height={250}>
+                <ComposedChart data={data}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={t.gridStroke} />
+                  <XAxis dataKey="label" tick={{ fill: t.axisTick, fontSize: 10 }} axisLine={false} tickLine={false} />
+                  <YAxis yAxisId="kwh" tick={{ fill: t.axisTickSub, fontSize: 10 }} axisLine={false} tickLine={false} />
+                  <YAxis yAxisId="cop" orientation="right" tick={{ fill: t.axisTickSub, fontSize: 10 }} axisLine={false} tickLine={false} domain={[0, 8]} />
+                  <Tooltip content={<CustomTooltip />} />
+                  <Bar yAxisId="kwh" dataKey="total" name="Pobrano (kWh)" fill={t.pumpSoft} radius={[4, 4, 0, 0]} />
+                  <Bar yAxisId="kwh" dataKey="produced_total" name="Wyprodukowano (kWh)" fill={t.copSoft} radius={[4, 4, 0, 0]} />
+                  <Line yAxisId="cop" dataKey="cop" name="COP" stroke={t.cop} strokeWidth={2.5} dot={{ fill: t.cop, r: 4, strokeWidth: 0 }} />
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+          </Section>
+
+          {/* Bottom cards */}
+          <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginTop: 32 }}>
+            {/* Pump share */}
+            <div style={{ flex: "1 1 300px", background: t.card, border: `1px solid ${t.border}`, borderRadius: 12, padding: 20 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: t.textStrong, marginBottom: 14 }}>📊 Udział pompy w zużyciu domu</div>
+              {data.filter(d => d.hasInv).map((d, i) => (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                  <span style={{ fontSize: 10, color: t.textMuted, width: 48, fontFamily: mono }}>{d.label}</span>
+                  <div style={{ flex: 1, height: 14, background: t.barBg, borderRadius: 3, overflow: "hidden", display: "flex" }}>
+                    <div style={{ width: `${d.pumpPct}%`, background: t.pump, opacity: 0.7, height: "100%" }} />
+                    <div style={{ flex: 1, background: t.houseSoft }} />
+                  </div>
+                  <span style={{ fontSize: 10, color: t.pump, fontFamily: mono, width: 30, textAlign: "right" }}>{d.pumpPct?.toFixed(0)}%</span>
+                  <span style={{ fontSize: 9, color: t.textFaint, width: 55, textAlign: "right" }}>{d.totalKwh} kWh</span>
+                </div>
+              ))}
+              <div style={{ fontSize: 9, color: t.textFaint, marginTop: 8 }}>* Sie, Wrz, Paź - pro-rata z faktur wielookresowych. V-VII = remont (niezamieszkane).</div>
+            </div>
+
+            {/* Fixed fees */}
+            <div style={{ flex: "1 1 240px", background: t.card, border: `1px solid ${t.border}`, borderRadius: 12, padding: 20 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: t.textStrong, marginBottom: 14 }}>🔒 Opłaty stałe (brutto/mc)</div>
+              {[
+                ["Maj-Cze '25", "2025-05", "bez mocowej"],
+                ["Lip '25", "2025-07", "mocowa 11.44"],
+                ["Sie-Gru '25", "2025-08", "mocowa 16.01"],
+                ["Sty '26", "2026-01", "przejście G11/G12W"],
+                ["Lut+ '26", "2026-02", "G12W pełne"],
+              ].map(([p, d, n], i) => (
+                <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0", borderBottom: `1px solid ${t.border}`, fontSize: 10 }}>
+                  <span style={{ color: t.textMuted }}>{p}</span>
+                  <span style={{ color: t.textFaint, fontSize: 9 }}>{n}</span>
+                  <span style={{ fontFamily: mono, fontWeight: 600, color: t.fixed }}>{fixedBrutto(d).toFixed(0)} zł</span>
+                </div>
+              ))}
+            </div>
+
+            {/* Tariff simulation */}
+            <div style={{ flex: "1 1 240px", background: t.card, border: `1px solid ${t.border}`, borderRadius: 12, padding: 20 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: t.textStrong, marginBottom: 12 }}>💡 Symulacja: pompa na jednej taryfie</div>
+              <div style={{ fontSize: 10, color: t.textFaint, marginBottom: 12 }}>{tot.consumed.toFixed(0)} kWh + stałe 11 mc</div>
+              {[
+                ["G11 (1.095 zł)", tariffSim.g11, t.danger],
+                [`G12W (${blend.toFixed(2)} zł)`, tariffSim.g12w, t.cop],
+              ].map(([l, v, c], i) => (
+                <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <span style={{ fontSize: 12, color: t.textMuted }}>{l}</span>
+                  <span style={{ fontFamily: mono, fontSize: 16, fontWeight: 700, color: c }}>{v.toFixed(0)} zł</span>
+                </div>
+              ))}
+              <div style={{ borderTop: `1px solid ${t.border}`, paddingTop: 8, display: "flex", justifyContent: "space-between" }}>
+                <span style={{ fontSize: 12, color: t.textMuted }}>Oszczędność G12W</span>
+                <span style={{ fontFamily: mono, fontSize: 18, fontWeight: 700, color: t.pump }}>{tariffSim.save.toFixed(0)} zł</span>
+              </div>
+            </div>
+          </div>
+
+          {/* ━━━ TABLE ━━━ */}
+          <Section icon="📋" title="Zestawienie miesięczne">
+            <div style={{ overflowX: "auto", background: t.card, border: `1px solid ${t.border}`, borderRadius: 12 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10, fontFamily: mono, minWidth: 820 }}>
+                <thead>
+                  <tr style={{ borderBottom: `1px solid ${t.borderStrong}` }}>
+                    {["Miesiąc","Taryfa","zł/kWh","Pompa","COP","Dom","Razem","Pompa%","Kosz.pomp","Kosz.dom","Stałe","FV brutto"].map(h => (
+                      <th key={h} style={{ padding: "8px 3px", textAlign: "right", color: t.labelColor, fontWeight: 500, fontSize: 8, textTransform: "uppercase", letterSpacing: "0.04em" }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.map((d, i) => (
+                    <tr key={i} style={{ borderBottom: `1px solid ${t.border}`, background: d.tariff.includes("G12W") ? t.pumpRow : "transparent", opacity: d.occ ? 1 : 0.5 }}>
+                      <td style={{ padding: "6px 3px", textAlign: "right", color: t.textStrong, fontWeight: 600 }}>
+                        {d.label}{!d.occ && <span style={{ fontSize: 7, color: t.warn, marginLeft: 3, verticalAlign: "super" }}>R</span>}
+                      </td>
+                      <td style={{ padding: "6px 3px", textAlign: "right" }}>
+                        <span style={{ background: d.tariff.includes("G12W") ? t.pumpBg : t.tagBg, color: d.tariff.includes("G12W") ? t.pump : t.tagColor, padding: "1px 4px", borderRadius: 3, fontSize: 8 }}>{d.tariff}</span>
+                      </td>
+                      <td style={{ padding: "6px 3px", textAlign: "right", color: t.warn, fontSize: 9 }}>{d.rate.toFixed(2)}</td>
+                      <td style={{ padding: "6px 3px", textAlign: "right", color: t.pump }}>{d.total.toFixed(0)}</td>
+                      <td style={{ padding: "6px 3px", textAlign: "right", color: t.cop }}>{d.cop.toFixed(1)}</td>
+                      <td style={{ padding: "6px 3px", textAlign: "right", color: d.hasInv ? t.house : t.textUltraFaint }}>{d.hasInv ? `${d.houseKwh?.toFixed(0)}${d.est ? "*" : ""}` : "-"}</td>
+                      <td style={{ padding: "6px 3px", textAlign: "right", color: d.hasInv ? t.textStrong : t.textUltraFaint }}>{d.hasInv ? d.totalKwh : "-"}</td>
+                      <td style={{ padding: "6px 3px", textAlign: "right", color: d.pumpPct ? t.textMuted : t.textUltraFaint, fontSize: 9 }}>{d.pumpPct ? `${d.pumpPct.toFixed(0)}%` : "-"}</td>
+                      <td style={{ padding: "6px 3px", textAlign: "right", color: t.pump, fontWeight: 600 }}>{d.pumpTotal.toFixed(0)}</td>
+                      <td style={{ padding: "6px 3px", textAlign: "right", color: d.hasInv ? t.house : t.textUltraFaint }}>{d.houseTotal !== null ? d.houseTotal.toFixed(0) : "-"}</td>
+                      <td style={{ padding: "6px 3px", textAlign: "right", color: t.fixed }}>{d.fixed.toFixed(0)}</td>
+                      <td style={{ padding: "6px 3px", textAlign: "right", color: d.invBrutto ? t.ok : t.textUltraFaint, fontWeight: d.invBrutto ? 600 : 400 }}>{d.invBrutto ? d.invBrutto.toFixed(0) : "-"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr style={{ borderTop: `2px solid ${t.borderStrong}` }}>
+                    <td style={{ padding: "8px 3px", textAlign: "right", color: t.textStrong, fontWeight: 700 }}>Suma</td>
+                    <td colSpan={2} />
+                    <td style={{ padding: "8px 3px", textAlign: "right", color: t.pump, fontWeight: 600 }}>{tot.consumed.toFixed(0)}</td>
+                    <td style={{ padding: "8px 3px", textAlign: "right", color: t.cop, fontWeight: 600 }} title={`Ogółem ${tot.avgCop.toFixed(2)}, zamieszkane ${tot.occCop.toFixed(2)}`}>{tot.occCop.toFixed(1)}</td>
+                    <td style={{ padding: "8px 3px", textAlign: "right", color: t.house, fontWeight: 600 }}>{tot.houseKwh.toFixed(0)}</td>
+                    <td style={{ padding: "8px 3px", textAlign: "right", color: t.textStrong, fontWeight: 600 }}>{tot.invKwh.toFixed(0)}</td>
+                    <td />
+                    <td style={{ padding: "8px 3px", textAlign: "right", color: t.pump, fontWeight: 700, fontSize: 11 }}>{tot.pumpCost.toFixed(0)} zł</td>
+                    <td colSpan={3} />
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </Section>
+
+          {/* Invoice cross-check */}
+          <Section icon="🧾" title="Weryfikacja faktur PGE">
+            <div style={{ background: t.card, border: `1px solid ${t.border}`, borderRadius: 12, padding: 20, fontSize: 11, lineHeight: 1.8 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: t.textStrong, marginBottom: 10 }}>Faktury z dokładnym odczytem</div>
+              <div style={{ display: "grid", gridTemplateColumns: "auto 1fr 1fr 1fr", gap: "3px 16px", maxWidth: 560, fontFamily: mono }}>
+                {[["FV","Okres","kWh","Brutto"],
+                  ["1R/2025","24.03-30.04","1 204","1 345,84"],
+                  ["2R/2025","30.04-31.05","751","840,80"],
+                  ["3R/2025","31.05-30.06","157","190,18"],
+                  ["4R/2025","30.06-31.07","157","204,25"],
+                  ["5R/2025","31.07-04.08","27","49,63"],
+                  ["6R/2025","04.08-22.09","677","791,26"],
+                  ["7R/2025","22.09-31.10","901","1 030,13"],
+                  ["8R/2025","31.10-30.11","920","1 045,60"],
+                  ["9R/2025","30.11-31.12","1 258","1 415,80"],
+                  ["10R/2026","31.12-31.01","1 960","2 120,83"],
+                ].map((r, i) => r.map((c, j) => (
+                  <span key={`${i}-${j}`} style={{
+                    color: i === 0 ? t.labelColor : j === 3 ? t.ok : j === 2 ? t.text : t.textMuted,
+                    fontWeight: i === 0 ? 600 : j === 3 ? 600 : 400,
+                    fontSize: i === 0 ? 8 : 10, textTransform: i === 0 ? "uppercase" : "none",
+                    textAlign: j > 1 ? "right" : "left",
+                  }}>{c}</span>
+                )))}
+              </div>
+              <div style={{ borderTop: `1px solid ${t.border}`, marginTop: 12, paddingTop: 10, display: "grid", gridTemplateColumns: "1fr 1fr", gap: "4px 20px", maxWidth: 520 }}>
+                <span style={{ color: t.textMuted }}>Styczeń 2026 (FV 10R):</span>
+                <span style={{ color: t.textStrong, fontWeight: 600 }}>2 120,83 zł brutto</span>
+                <span style={{ color: t.textMuted }}>Zużycie:</span>
+                <span style={{ color: t.text }}>1960 kWh (G11: 1503 + G12W: 174dz + 283noc)</span>
+                <span style={{ color: t.textMuted }}>Pompa ciepła:</span>
+                <span style={{ color: t.pump }}>1488 kWh (76%)</span>
+                <span style={{ color: t.textMuted }}>Reszta domu:</span>
+                <span style={{ color: t.house }}>472 kWh (24%)</span>
+              </div>
+            </div>
+          </Section>
+
+          {/* Footnotes */}
+          <div style={{ marginTop: 24, padding: "14px 18px", background: t.footerBg, border: `1px solid ${t.footerBorder}`, borderRadius: 10, fontSize: 9, color: t.footerText, lineHeight: 1.7 }}>
+            <div style={{ fontWeight: 600, color: t.textMuted, marginBottom: 4 }}>Źródła i metoda</div>
+            <div>Pompa ciepła: MELCloud (Mitsubishi). Zużycie domu: faktury PGE (1R-9R/2025, 10R/2026). * = interpolowane z nakładających się okresów rozliczeniowych.</div>
+            <div><span style={{ color: t.warn }}>R</span> = remont / niezamieszkane (V-VII '25). Pompa na standby, zużycie domu = narzędzia. COP zaniżony. Zamieszkanie od 10.08.2025.</div>
+            <div>Brak faktur: Lut '26, Mar '26. G11 2025: 1.095 zł brutto (zamrożenie do 31.12). G12W: szczyt 1.301, noc 0.684.</div>
+            <div>Mocowa: 0 (V-VI) → 11.44 (VII) → 16.01 (VIII-XII) → 24.05 (2026). Sieciowa stała: 9.98 (G11) → 14.98 (G12W). Moc umowna: 21 kW.</div>
+          </div>
+        </div>
+      </div>
+    </ThemeCtx.Provider>
+  );
+}
+
+ReactDOM.render(React.createElement(HeatPumpDashboard), document.getElementById('root'));
+  </script>
+</body>
+</html>
